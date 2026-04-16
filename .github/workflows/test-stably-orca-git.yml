@@ -38,8 +38,10 @@ jobs:
             archlinux:base-devel \
             bash -euxc '
               pacman-key --init >/dev/null 2>&1 || true
-              pacman -Syu --noconfirm --needed pacman-contrib git fuse2 >/dev/null
+              pacman -Syu --noconfirm --needed pacman-contrib git fuse2 sudo >/dev/null
               useradd -m builder
+              echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
+              chmod 0440 /etc/sudoers.d/builder
               chown -R builder:builder /work
               sudo -u builder bash -euxc "
                 cd /work/'"${PKG_DIR}"'

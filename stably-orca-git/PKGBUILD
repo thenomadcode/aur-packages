@@ -54,10 +54,13 @@ build() {
   cd "${srcdir}/${_gitname}"
   # Electron + node-pty need a working C toolchain and Python, covered by base-devel + makedepends.
   pnpm install --frozen-lockfile
-  # Pass AppImage target so electron-builder skips deb (bundled fpm/ruby
-  # wants libcrypt.so.1 which Arch doesn't ship, and we only consume
-  # the AppImage anyway).
-  pnpm run build:linux -- AppImage
+  # Reproduce upstream's build:linux but restrict electron-builder to the
+  # AppImage target. Upstream's script also builds a .deb via bundled fpm,
+  # whose ruby wants libcrypt.so.1 (not shipped on Arch). We only consume
+  # the AppImage anyway. Invoking electron-builder directly avoids having
+  # the script's `&&` chain mis-route positional args.
+  pnpm run build
+  pnpm exec electron-builder --config config/electron-builder.config.cjs --linux AppImage
 }
 
 package() {

@@ -3,3 +3,5 @@ source = "github"
 github = "stablyai/orca"
 use_max_tag = true
 prefix = "v"
+# Stable releases only. Skip -rc.N / -alpha / -beta / etc.
+include_regex = '^\d+\.\d+\.\d+$'

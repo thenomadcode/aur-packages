@@ -37,6 +37,10 @@ jobs:
             -w "/work/${PKG_DIR}" \
             archlinux:base-devel \
             bash -euxc '
+              HOST_UID="$(stat -c %u /work)"
+              HOST_GID="$(stat -c %g /work)"
+              # Restore host ownership on exit so post-job steps can touch .git.
+              trap "chown -R ${HOST_UID}:${HOST_GID} /work" EXIT
               pacman-key --init >/dev/null 2>&1 || true
               pacman -Syu --noconfirm --needed pacman-contrib git fuse2 sudo >/dev/null
               useradd -m builder

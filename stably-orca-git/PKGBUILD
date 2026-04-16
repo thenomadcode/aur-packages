@@ -43,7 +43,8 @@ sha256sums=(
 pkgver() {
   cd "${srcdir}/${_gitname}"
   local tag count hash
-  tag="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+  # Strip leading v, replace hyphens with dots (pkgver forbids hyphens).
+  tag="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//; s/-/./g')"
   count="$(git rev-list --count HEAD)"
   hash="$(git rev-parse --short HEAD)"
   printf '%s.r%s.g%s' "${tag:-0}" "${count}" "${hash}"

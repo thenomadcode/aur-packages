@@ -186,9 +186,23 @@ jobs:
           git commit -m "stably-orca-bin: bump to v${NEW_VER}"
           git push
 
-      - name: Publish to AUR
+      - name: Check AUR secret configured
         if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc == '0'
-        uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
+        id: aur_check
+        env:
+          KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          USERNAME: ${{ vars.AUR_USERNAME }}
+        run: |
+          if [[ -n "${KEY}" && -n "${USERNAME}" ]]; then
+            echo "configured=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "configured=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::AUR_SSH_PRIVATE_KEY secret or AUR_USERNAME variable missing — skipping AUR publish. Bump was committed to main."
+          fi
+
+      - name: Publish to AUR
+        if: steps.aur_check.outputs.configured == 'true'
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.2
         with:
           pkgname: stably-orca-bin
           pkgbuild: stably-orca-bin/PKGBUILD

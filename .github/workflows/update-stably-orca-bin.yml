@@ -44,10 +44,18 @@ jobs:
 
       - name: Run nvchecker
         id: upstream
+        env:
+          GH_TOKEN_FOR_NVCHECKER: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           cp "${PKG_DIR}/.nvchecker.toml" /tmp/nvchecker.toml
-          nvchecker --file /tmp/nvchecker.toml --logger json --keyfile /dev/null > /tmp/nv.json || true
+          # Supply GITHUB_TOKEN to avoid unauthenticated rate limits on schedule.
+          cat > /tmp/nvkeys.toml <<EOF
+          [keys]
+          github = "${GH_TOKEN_FOR_NVCHECKER}"
+          EOF
+          chmod 600 /tmp/nvkeys.toml
+          nvchecker --file /tmp/nvchecker.toml --logger json --keyfile /tmp/nvkeys.toml > /tmp/nv.json || true
           cat /tmp/nv.json
           latest="$(python3 - <<'PY'
           import json, sys

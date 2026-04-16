@@ -1,0 +1,16 @@
+# makepkg build artifacts
+*/pkg/
+*/src/
+*/*.pkg.tar.*
+*/*.log
+*/squashfs-root/
+
+# nvchecker state files
+*.json.keyfile
+nvchecker-keyfile.toml
+**/new_ver.json
+**/old_ver.json
+
+# editor noise
+.DS_Store
+*.swp

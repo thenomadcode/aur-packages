@@ -1,0 +1,5 @@
+[stably-orca-bin]
+source = "github"
+github = "stablyai/orca"
+use_max_tag = true
+prefix = "v"

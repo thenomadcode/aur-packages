@@ -1,0 +1,191 @@
+name: update-stably-orca-bin
+
+on:
+  schedule:
+    # Every 6 hours.
+    - cron: '17 */6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: update-stably-orca-bin
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      PKG_DIR: stably-orca-bin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install nvchecker
+        run: pip install --upgrade nvchecker
+
+      - name: Read current pkgver
+        id: current
+        run: |
+          set -euo pipefail
+          cur="$(awk -F= '/^pkgver=/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "${PKG_DIR}/PKGBUILD")"
+          echo "pkgver=${cur}" >> "${GITHUB_OUTPUT}"
+          echo "Current pkgver: ${cur}"
+
+      - name: Run nvchecker
+        id: upstream
+        run: |
+          set -euo pipefail
+          cp "${PKG_DIR}/.nvchecker.toml" /tmp/nvchecker.toml
+          nvchecker --file /tmp/nvchecker.toml --logger json --keyfile /dev/null > /tmp/nv.json || true
+          cat /tmp/nv.json
+          latest="$(python3 - <<'PY'
+          import json, sys
+          found = ''
+          try:
+              with open('/tmp/nv.json') as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      try:
+                          obj = json.loads(line)
+                      except json.JSONDecodeError:
+                          continue
+                      v = obj.get('version')
+                      if v:
+                          found = v
+          except FileNotFoundError:
+              pass
+          print(found)
+          PY
+          )"
+          if [[ -z "${latest}" ]]; then
+            echo "::error::nvchecker did not return a version"
+            exit 1
+          fi
+          # Guard: semver-ish only, no shell metachars.
+          if ! [[ "${latest}" =~ ^[0-9A-Za-z._-]+$ ]]; then
+            echo "::error::refused suspicious version string: ${latest}"
+            exit 1
+          fi
+          echo "latest=${latest}" >> "${GITHUB_OUTPUT}"
+          echo "Upstream latest: ${latest}"
+
+      - name: Compare versions
+        id: diff
+        env:
+          CUR: ${{ steps.current.outputs.pkgver }}
+          NEW: ${{ steps.upstream.outputs.latest }}
+        run: |
+          set -euo pipefail
+          if [[ "${CUR}" == "${NEW}" ]]; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "No update needed."
+          else
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+            echo "Update: ${CUR} -> ${NEW}"
+          fi
+
+      - name: Bump PKGBUILD
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          NEW_VER: ${{ steps.upstream.outputs.latest }}
+        run: |
+          set -euo pipefail
+          sed -i "s|^pkgver=.*|pkgver=${NEW_VER}|" "${PKG_DIR}/PKGBUILD"
+          sed -i "s|^pkgrel=.*|pkgrel=1|" "${PKG_DIR}/PKGBUILD"
+          grep -E '^(pkgver|pkgrel)=' "${PKG_DIR}/PKGBUILD"
+
+      - name: Test-build in Arch container + regen sums and .SRCINFO
+        if: steps.diff.outputs.changed == 'true'
+        id: build
+        run: |
+          set +e
+          docker run --rm \
+            -v "${PWD}:/work" \
+            -w "/work/${PKG_DIR}" \
+            archlinux:base-devel \
+            bash -euxc '
+              pacman-key --init >/dev/null 2>&1 || true
+              pacman -Syu --noconfirm --needed pacman-contrib git fuse2 >/dev/null
+              useradd -m builder
+              chown -R builder:builder /work
+              sudo -u builder bash -euxc "
+                cd /work/'"${PKG_DIR}"'
+                updpkgsums
+                makepkg -s --noconfirm
+                makepkg --printsrcinfo > .SRCINFO
+              "
+            '
+          rc=$?
+          echo "rc=${rc}" >> "${GITHUB_OUTPUT}"
+          if [[ ${rc} -ne 0 ]]; then
+            echo "::warning::makepkg failed with rc=${rc}"
+          fi
+          exit 0
+
+      - name: Open issue on build failure
+        if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc != '0'
+        uses: actions/github-script@v7
+        env:
+          NEW_VER: ${{ steps.upstream.outputs.latest }}
+        with:
+          script: |
+            const newVer = process.env.NEW_VER;
+            const title = `stably-orca-bin: build failed for v${newVer}`;
+            const body = [
+              `Automated update to **v${newVer}** failed in CI.`,
+              ``,
+              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `- Current pkgver in repo was not changed.`,
+              ``,
+              `Investigate before pushing to AUR.`,
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['ci-failure', 'stably-orca-bin'],
+            });
+            core.setFailed('Build failed — issue opened, not pushing.');
+
+      - name: Commit bump to main
+        if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc == '0'
+        env:
+          NEW_VER: ${{ steps.upstream.outputs.latest }}
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add "${PKG_DIR}/PKGBUILD" "${PKG_DIR}/.SRCINFO"
+          git commit -m "stably-orca-bin: bump to v${NEW_VER}"
+          git push
+
+      - name: Publish to AUR
+        if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc == '0'
+        uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
+        with:
+          pkgname: stably-orca-bin
+          pkgbuild: stably-orca-bin/PKGBUILD
+          assets: |
+            stably-orca-bin/stably-orca.sh
+            stably-orca-bin/stably-orca.desktop
+          commit_username: ${{ vars.AUR_USERNAME }}
+          commit_email: thenomadcodeinfo@gmail.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "stably-orca-bin: bump to v${{ steps.upstream.outputs.latest }}"
+          allow_empty_commits: false
+          force_push: false
+          ssh_keyscan_types: 'rsa,ecdsa,ed25519'

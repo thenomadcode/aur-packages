@@ -4,7 +4,12 @@ on:
   schedule:
     # Every 6 hours.
     - cron: '17 */6 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Run build + AUR publish even if pkgver already matches upstream (use for initial publish or to recover from AUR drift).'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -95,18 +100,25 @@ jobs:
         env:
           CUR: ${{ steps.current.outputs.pkgver }}
           NEW: ${{ steps.upstream.outputs.latest }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_publish || 'false' }}
         run: |
           set -euo pipefail
-          if [[ "${CUR}" == "${NEW}" ]]; then
+          if [[ "${FORCE}" == "true" ]]; then
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+            echo "needs_bump=false" >> "${GITHUB_OUTPUT}"
+            echo "Forced publish requested; pkgver stays at ${CUR}."
+          elif [[ "${CUR}" == "${NEW}" ]]; then
             echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "needs_bump=false" >> "${GITHUB_OUTPUT}"
             echo "No update needed."
           else
             echo "changed=true" >> "${GITHUB_OUTPUT}"
+            echo "needs_bump=true" >> "${GITHUB_OUTPUT}"
             echo "Update: ${CUR} -> ${NEW}"
           fi
 
       - name: Bump PKGBUILD
-        if: steps.diff.outputs.changed == 'true'
+        if: steps.diff.outputs.needs_bump == 'true'
         env:
           NEW_VER: ${{ steps.upstream.outputs.latest }}
         run: |
@@ -183,8 +195,12 @@ jobs:
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git add "${PKG_DIR}/PKGBUILD" "${PKG_DIR}/.SRCINFO"
-          git commit -m "stably-orca-bin: bump to v${NEW_VER}"
-          git push
+          if git diff --cached --quiet; then
+            echo "No file changes to commit (forced publish on unchanged pkgver)."
+          else
+            git commit -m "stably-orca-bin: bump to v${NEW_VER}"
+            git push
+          fi
 
       - name: Check AUR secret configured
         if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc == '0'

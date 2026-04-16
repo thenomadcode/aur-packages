@@ -5,8 +5,15 @@ on:
     # Weekly Sunday 04:23 UTC. -git packages don't change pkgver on a schedule;
     # this job verifies the recipe still builds against upstream HEAD.
     - cron: '23 4 * * 0'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Push to AUR even if no PKGBUILD changes are detected (use for initial publish).'
+        type: boolean
+        default: true
   push:
+    branches:
+      - main
     paths:
       - 'stably-orca-git/**'
       - '.github/workflows/test-stably-orca-git.yml'
@@ -24,6 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PKG_DIR: stably-orca-git
+    outputs:
+      rc: ${{ steps.build.outputs.rc }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -84,3 +93,45 @@ jobs:
       - name: Fail job if build failed
         if: steps.build.outputs.rc != '0'
         run: exit 1
+
+  publish:
+    # Only runs on push-to-main (after build passes) or explicit dispatch.
+    # Scheduled + PR builds never publish.
+    needs: build
+    if: >-
+      needs.build.outputs.rc == '0' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check AUR secret configured
+        id: aur_check
+        env:
+          KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          USERNAME: ${{ vars.AUR_USERNAME }}
+        run: |
+          if [[ -n "${KEY}" && -n "${USERNAME}" ]]; then
+            echo "configured=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "configured=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::AUR_SSH_PRIVATE_KEY secret or AUR_USERNAME variable missing — skipping AUR publish."
+          fi
+
+      - name: Publish to AUR
+        if: steps.aur_check.outputs.configured == 'true'
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.2
+        with:
+          pkgname: stably-orca-git
+          pkgbuild: stably-orca-git/PKGBUILD
+          assets: |
+            stably-orca-git/stably-orca.sh
+            stably-orca-git/stably-orca.desktop
+          commit_username: ${{ vars.AUR_USERNAME }}
+          commit_email: thenomadcodeinfo@gmail.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "stably-orca-git: update PKGBUILD (${{ github.sha }})"
+          allow_empty_commits: false
+          force_push: false
+          ssh_keyscan_types: 'rsa,ecdsa,ed25519'

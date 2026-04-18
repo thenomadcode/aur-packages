@@ -1,8 +1,7 @@
 [stably-orca-bin]
 source = "github"
 github = "stablyai/orca"
-use_max_tag = true
+# Use /releases/latest — excludes drafts, pre-releases, and tags that never
+# shipped assets (e.g. v1.3.0 was tagged upstream but had no AppImage).
+use_latest_release = true
 prefix = "v"
-# Stable releases only. Skip -rc.N / -alpha / -beta / etc.
-# nvchecker applies include_regex before prefix is stripped, so keep the v.
-include_regex = '^v\d+\.\d+\.\d+$'

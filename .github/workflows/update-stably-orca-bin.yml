@@ -26,13 +26,13 @@ jobs:
       PKG_DIR: stably-orca-bin
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -162,7 +162,7 @@ jobs:
 
       - name: Open issue on build failure
         if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc != '0'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           NEW_VER: ${{ steps.upstream.outputs.latest }}
         with:
@@ -217,8 +217,27 @@ jobs:
           fi
 
       - name: Publish to AUR
+        id: aur_publish
         if: steps.aur_check.outputs.configured == 'true'
-        uses: KSXGitHub/github-actions-deploy-aur@v4.1.2
+        continue-on-error: true
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+        with:
+          pkgname: stably-orca-bin
+          pkgbuild: stably-orca-bin/PKGBUILD
+          assets: |
+            stably-orca-bin/stably-orca.sh
+            stably-orca-bin/stably-orca.desktop
+          commit_username: ${{ vars.AUR_USERNAME }}
+          commit_email: thenomadcodeinfo@gmail.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "stably-orca-bin: bump to v${{ steps.upstream.outputs.latest }}"
+          allow_empty_commits: false
+          force_push: false
+          ssh_keyscan_types: 'rsa,ecdsa,ed25519'
+
+      - name: Publish to AUR (retry on transient SSH failure)
+        if: steps.aur_check.outputs.configured == 'true' && steps.aur_publish.outcome == 'failure'
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
           pkgname: stably-orca-bin
           pkgbuild: stably-orca-bin/PKGBUILD

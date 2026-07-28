@@ -10,7 +10,6 @@ pkgbase = stably-orca-git
 	makedepends = pnpm
 	makedepends = python
 	makedepends = unzip
-	depends = fuse2
 	depends = zlib
 	depends = hicolor-icon-theme
 	depends = gtk3

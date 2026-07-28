@@ -17,13 +17,20 @@ on:
     paths:
       - 'stably-orca-git/**'
       - '.github/workflows/test-stably-orca-git.yml'
+  # Verify the recipe before it reaches main. The publish job below is already
+  # gated on push/dispatch, so PR runs build only and never touch the AUR.
+  pull_request:
+    paths:
+      - 'stably-orca-git/**'
+      - '.github/workflows/test-stably-orca-git.yml'
 
 permissions:
   contents: read
   issues: write
 
 concurrency:
-  group: test-stably-orca-git
+  # Per-ref, so a PR run cannot cancel the main-branch run that publishes.
+  group: test-stably-orca-git-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

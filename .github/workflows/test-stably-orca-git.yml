@@ -59,9 +59,14 @@ jobs:
               sudo -u builder bash -euxc "
                 cd /work/'"${PKG_DIR}"'
                 makepkg -s --noconfirm
-                makepkg --printsrcinfo > .SRCINFO.generated
-                if ! diff -u .SRCINFO .SRCINFO.generated; then
-                  echo \"::warning::.SRCINFO drift detected. Regenerate locally.\"
+                # pkgver() resolves against upstream HEAD, so the generated
+                # pkgver never matches the committed placeholder. Ignore that
+                # one field, otherwise the warning fires on every run and real
+                # drift (a stale depends entry) hides in the noise.
+                makepkg --printsrcinfo | grep -v pkgver > /tmp/srcinfo.gen
+                grep -v pkgver .SRCINFO > /tmp/srcinfo.cur
+                if ! diff -u /tmp/srcinfo.cur /tmp/srcinfo.gen; then
+                  echo \"::warning::.SRCINFO drift detected (pkgver ignored). Regenerate locally.\"
                 fi
               "
             '

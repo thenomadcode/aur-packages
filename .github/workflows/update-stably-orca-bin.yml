@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       force_publish:
-        description: 'Run build + AUR publish even if pkgver already matches upstream (use for initial publish or to recover from AUR drift).'
+        description: 'Run build + AUR publish even if pkgver already matches upstream and the AUR is already in sync (use for initial publish or to force a re-push).'
         type: boolean
         default: true
 
@@ -18,6 +18,9 @@ permissions:
 concurrency:
   group: update-stably-orca-bin
   cancel-in-progress: false
+
+env:
+  PKG_NAME: stably-orca-bin
 
 jobs:
   update:
@@ -44,8 +47,30 @@ jobs:
         run: |
           set -euo pipefail
           cur="$(awk -F= '/^pkgver=/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "${PKG_DIR}/PKGBUILD")"
+          rel="$(awk -F= '/^pkgrel=/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "${PKG_DIR}/PKGBUILD")"
           echo "pkgver=${cur}" >> "${GITHUB_OUTPUT}"
-          echo "Current pkgver: ${cur}"
+          echo "fullver=${cur}-${rel}" >> "${GITHUB_OUTPUT}"
+          echo "Current pkgver: ${cur}-${rel}"
+
+      - name: Read published AUR version
+        id: aur_state
+        run: |
+          set -euo pipefail
+          # The AUR — not this repo — is the source of truth for "does the AUR
+          # need a push?". Without this check a failed publish left main already
+          # bumped, so every later run short-circuited on "pkgver matches
+          # upstream", skipped the publish entirely and reported green while the
+          # AUR sat 14 releases behind (2026-08-01 .. 2026-08-10).
+          published=''
+          if body="$(curl -fsS --max-time 30 --retry 3 --retry-delay 5 \
+              "https://aur.archlinux.org/rpc/v5/info?arg[]=${PKG_NAME}")"; then
+            # sub() strips any epoch prefix so this compares against plain pkgver-pkgrel.
+            published="$(printf '%s' "${body}" | jq -r '(.results[0].Version // "") | sub("^[0-9]+:"; "")')"
+          else
+            echo "::warning::AUR RPC unreachable — cannot tell whether the AUR is in sync; assuming it is."
+          fi
+          echo "published=${published}" >> "${GITHUB_OUTPUT}"
+          echo "AUR published version: ${published:-<unknown>}"
 
       - name: Run nvchecker
         id: upstream
@@ -87,9 +112,12 @@ jobs:
             echo "::error::nvchecker did not return a version"
             exit 1
           fi
-          # Guard: semver-ish only, no shell metachars.
-          if ! [[ "${latest}" =~ ^[0-9A-Za-z._-]+$ ]]; then
-            echo "::error::refused suspicious version string: ${latest}"
+          # makepkg rejects a pkgver containing colons, slashes, hyphens or
+          # whitespace, so accept dotted-numeric versions only. A looser guard
+          # let the upstream QA tag qa-pr13411-exact-head-58e91cb0d8-windows-wsl
+          # through on 2026-08-10 and the build died inside updpkgsums instead.
+          if ! [[ "${latest}" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+            echo "::error::refused non-release version string: ${latest}"
             exit 1
           fi
           echo "latest=${latest}" >> "${GITHUB_OUTPUT}"
@@ -99,23 +127,34 @@ jobs:
         id: diff
         env:
           CUR: ${{ steps.current.outputs.pkgver }}
+          CUR_FULL: ${{ steps.current.outputs.fullver }}
           NEW: ${{ steps.upstream.outputs.latest }}
+          AUR_PUBLISHED: ${{ steps.aur_state.outputs.published }}
           FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_publish || 'false' }}
         run: |
           set -euo pipefail
-          if [[ "${FORCE}" == "true" ]]; then
-            echo "changed=true" >> "${GITHUB_OUTPUT}"
-            echo "needs_bump=false" >> "${GITHUB_OUTPUT}"
-            echo "Forced publish requested; pkgver stays at ${CUR}."
-          elif [[ "${CUR}" == "${NEW}" ]]; then
-            echo "changed=false" >> "${GITHUB_OUTPUT}"
-            echo "needs_bump=false" >> "${GITHUB_OUTPUT}"
-            echo "No update needed."
-          else
-            echo "changed=true" >> "${GITHUB_OUTPUT}"
-            echo "needs_bump=true" >> "${GITHUB_OUTPUT}"
-            echo "Update: ${CUR} -> ${NEW}"
+          needs_bump=false
+          aur_stale=false
+          if [[ "${CUR}" != "${NEW}" ]]; then
+            needs_bump=true
           fi
+          # An empty published version means the RPC lookup failed above; don't
+          # invent a drift out of that.
+          if [[ -n "${AUR_PUBLISHED}" && "${AUR_PUBLISHED}" != "${CUR_FULL}" ]]; then
+            aur_stale=true
+          fi
+          if [[ "${FORCE}" == "true" || "${needs_bump}" == "true" || "${aur_stale}" == "true" ]]; then
+            changed=true
+          else
+            changed=false
+          fi
+          {
+            echo "changed=${changed}"
+            echo "needs_bump=${needs_bump}"
+            echo "aur_stale=${aur_stale}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Repo: ${CUR_FULL} | upstream: ${NEW} | AUR: ${AUR_PUBLISHED:-<unknown>}"
+          echo "needs_bump=${needs_bump} aur_stale=${aur_stale} forced=${FORCE} -> changed=${changed}"
 
       - name: Bump PKGBUILD
         if: steps.diff.outputs.needs_bump == 'true'
@@ -169,21 +208,37 @@ jobs:
           script: |
             const newVer = process.env.NEW_VER;
             const title = `stably-orca-bin: build failed for v${newVer}`;
-            const body = [
-              `Automated update to **v${newVer}** failed in CI.`,
-              ``,
-              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              `- Current pkgver in repo was not changed.`,
-              ``,
-              `Investigate before pushing to AUR.`,
-            ].join('\n');
-            await github.rest.issues.create({
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            // The schedule fires every 6h; without this check a persistent
+            // failure files a fresh duplicate issue four times a day.
+            const open = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title,
-              body,
-              labels: ['ci-failure', 'stably-orca-bin'],
+              state: 'open',
+              labels: 'ci-failure',
+              per_page: 100,
             });
+            const existing = open.find(issue => issue.title === title);
+            if (existing) {
+              // Don't comment on every run — the schedule is 6-hourly and the
+              // red run is already the signal.
+              core.info(`#${existing.number} already tracks this failure.`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body: [
+                  `Automated update to **v${newVer}** failed in CI.`,
+                  ``,
+                  `- Run: ${runUrl}`,
+                  `- Current pkgver in repo was not changed.`,
+                  ``,
+                  `Investigate before pushing to AUR.`,
+                ].join('\n'),
+                labels: ['ci-failure', 'stably-orca-bin'],
+              });
+            }
             core.setFailed('Build failed — issue opened, not pushing.');
 
       - name: Commit bump to main
@@ -196,7 +251,7 @@ jobs:
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git add "${PKG_DIR}/PKGBUILD" "${PKG_DIR}/.SRCINFO"
           if git diff --cached --quiet; then
-            echo "No file changes to commit (forced publish on unchanged pkgver)."
+            echo "No file changes to commit (re-publishing an unchanged pkgver)."
           else
             git commit -m "stably-orca-bin: bump to v${NEW_VER}"
             git push
@@ -216,6 +271,10 @@ jobs:
             echo "::notice::AUR_SSH_PRIVATE_KEY secret or AUR_USERNAME variable missing — skipping AUR publish. Bump was committed to main."
           fi
 
+      # No immediate retry step: the only failure mode seen in practice is the
+      # AUR refusing writes for days ("The AUR is down due to maintenance"), and
+      # a retry ~12s later never helped. Recovery is now automatic — the next
+      # scheduled run sees the AUR is behind and re-publishes on its own.
       - name: Publish to AUR
         id: aur_publish
         if: steps.aur_check.outputs.configured == 'true'
@@ -235,19 +294,48 @@ jobs:
           force_push: false
           ssh_keyscan_types: 'rsa,ecdsa,ed25519'
 
-      - name: Publish to AUR (retry on transient SSH failure)
-        if: steps.aur_check.outputs.configured == 'true' && steps.aur_publish.outcome == 'failure'
-        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+      - name: Report AUR publish failure
+        if: steps.aur_publish.outcome == 'failure'
+        uses: actions/github-script@v9
+        env:
+          NEW_VER: ${{ steps.upstream.outputs.latest }}
+          AUR_PUBLISHED: ${{ steps.aur_state.outputs.published }}
         with:
-          pkgname: stably-orca-bin
-          pkgbuild: stably-orca-bin/PKGBUILD
-          assets: |
-            stably-orca-bin/stably-orca.sh
-            stably-orca-bin/stably-orca.desktop
-          commit_username: ${{ vars.AUR_USERNAME }}
-          commit_email: thenomadcodeinfo@gmail.com
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "stably-orca-bin: bump to v${{ steps.upstream.outputs.latest }}"
-          allow_empty_commits: false
-          force_push: false
-          ssh_keyscan_types: 'rsa,ecdsa,ed25519'
+          script: |
+            const title = 'stably-orca-bin: AUR publish failing';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'ci-failure',
+              per_page: 100,
+            });
+            const existing = open.find(issue => issue.title === title);
+            const detail = [
+              `- Run: ${runUrl}`,
+              `- Target version: v${process.env.NEW_VER}`,
+              `- AUR was on: ${process.env.AUR_PUBLISHED || '<unknown>'}`,
+            ].join('\n');
+            if (existing) {
+              // Quiet during a long AUR outage: one issue, no 6-hourly comments.
+              core.info(`#${existing.number} already tracks this. ${detail}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body: [
+                  `Pushing to the AUR failed, so the published package is now behind this repo.`,
+                  ``,
+                  detail,
+                  ``,
+                  `If the log says "The AUR is down due to maintenance", this is an`,
+                  `upstream Arch outage and nothing here needs changing — the next`,
+                  `scheduled run detects the drift and re-publishes automatically.`,
+                  `Close this issue once the AUR version matches again.`,
+                ].join('\n'),
+                labels: ['ci-failure', 'stably-orca-bin'],
+              });
+            }
+            core.setFailed('AUR publish failed — the AUR is out of sync with this repo. The next scheduled run retries automatically.');

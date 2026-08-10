@@ -1,7 +1,12 @@
 [stably-orca-bin]
 source = "github"
 github = "stablyai/orca"
-# Use /releases/latest — excludes drafts, pre-releases, and tags that never
-# shipped assets (e.g. v1.3.0 was tagged upstream but had no AppImage).
-use_latest_release = true
+# Upstream ships QA builds as ordinary releases with the prerelease flag *off*
+# (e.g. qa-pr13411-exact-head-58e91cb0d8-windows-wsl on 2026-08-10), so
+# /releases/latest is not trustworthy — it handed back that tag and makepkg
+# rejected the resulting pkgver. Enumerate published releases instead and keep
+# only plain vX.Y.Z tags; that drops the QA builds and the -rc.N prereleases,
+# and still ignores bare tags that never shipped a release (e.g. v1.3.0).
+use_max_release = true
+include_regex = 'v[0-9]+\.[0-9]+\.[0-9]+'
 prefix = "v"

@@ -7,6 +7,7 @@ pkgbase = stably-orca-git
 	license = MIT
 	makedepends = git
 	makedepends = nodejs>=20
+	makedepends = npm
 	makedepends = pnpm
 	makedepends = python
 	makedepends = unzip

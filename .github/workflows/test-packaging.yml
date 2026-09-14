@@ -1,0 +1,54 @@
+name: test-packaging
+
+on:
+  pull_request:
+    paths:
+      - 'stably-orca-bin/**'
+      - 'stably-orca-git/**'
+      - '.github/**'
+      - 'tests/**'
+  push:
+    branches: [main]
+    paths:
+      - 'stably-orca-bin/**'
+      - 'stably-orca-git/**'
+      - '.github/**'
+      - 'tests/**'
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: pip install 'PyYAML==6.0.3'
+      - run: python3 -m unittest discover -s tests -p 'test_*.py'
+      - run: node --test tests/*.test.cjs
+
+  binary-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify committed binary recipe in Arch
+        run: |
+          docker run --rm -v "${PWD}:/work" -w /work/stably-orca-bin \
+            archlinux:base-devel bash -euxc '
+              pacman -Syu --noconfirm --needed sudo
+              useradd -m builder
+              echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
+              chmod 0440 /etc/sudoers.d/builder
+              chown -R builder:builder /work/stably-orca-bin
+              sudo -u builder bash -euxc "
+                makepkg --printsrcinfo > /tmp/srcinfo.gen
+                diff -u .SRCINFO /tmp/srcinfo.gen
+                makepkg -s --noconfirm
+              "
+            '

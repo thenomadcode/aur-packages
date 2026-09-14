@@ -35,10 +35,14 @@ Any AUR helper works — `paru`, `yay`, plain `makepkg -si`. No AUR helper is re
 
 1. A GitHub Actions job runs every 6 hours.
 2. [`nvchecker`](https://github.com/lilydjwg/nvchecker) reads the latest `v*` tag from `stablyai/orca` releases.
-3. If the upstream version differs from the committed `pkgver`, the workflow bumps `pkgver`/`pkgrel`, regenerates `sha256sums` with `updpkgsums`, and **test-builds the package in an `archlinux:base-devel` container**. If the build fails, a GitHub issue is opened and nothing is pushed to AUR.
+3. The selected AppImage URL is checked on every run, even if the version is unchanged. A missing download opens one failure issue and blocks publication. If the upstream version differs from the committed `pkgver`, the workflow bumps `pkgver`/`pkgrel`, regenerates `sha256sums` with `updpkgsums`, and **test-builds the package in an `archlinux:base-devel` container**. If the build fails, a GitHub issue is opened and nothing is pushed to AUR.
 4. On a clean build, `.SRCINFO` is regenerated, committed to `main`, and the `stably-orca-bin/` subtree is pushed to the AUR git repo over SSH using [`KSXGitHub/github-actions-deploy-aur`](https://github.com/KSXGitHub/github-actions-deploy-aur).
 
-`stably-orca-git` has its own weekly workflow that re-runs the build against upstream HEAD and opens an issue if it breaks. It does not auto-bump, auto-push, or auto-release — `-git` packages fetch HEAD at install time.
+If upstream withdraws a release, the updater can return to the latest remaining stable release. It test-builds before publishing that rollback. Existing installations on the withdrawn, higher version need an explicit downgrade; fresh installs use the restored package normally. Download reports close after availability and AUR synchronization recover.
+
+`stably-orca-git` has its own weekly workflow that re-runs the build against upstream HEAD. Repeated failures share one issue; a successful main-branch build closes the automated reports. Package versions use only stable desktop `vX.Y.Z` tags, excluding mobile and prerelease tags. Committed `.SRCINFO` is checked before the build changes `pkgver` and resets `pkgrel`. Scheduled builds do not publish — `-git` packages fetch HEAD at install time. Validated recipe changes pushed to `main` publish to AUR.
+
+Pull requests run packaging regression tests and an Arch build of the committed binary recipe; changes to the source recipe also run its full Arch build. Locally, run `python3 -m unittest discover -s tests -p 'test_*.py'` (requires PyYAML) and `node --test tests/*.test.cjs`.
 
 ### Required repo configuration
 

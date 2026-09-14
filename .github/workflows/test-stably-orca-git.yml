@@ -17,12 +17,16 @@ on:
     paths:
       - 'stably-orca-git/**'
       - '.github/workflows/test-stably-orca-git.yml'
+      - '.github/scripts/sync-ci-issue.cjs'
+      - 'tests/check-built-version.sh'
   # Verify the recipe before it reaches main. The publish job below is already
   # gated on push/dispatch, so PR runs build only and never touch the AUR.
   pull_request:
     paths:
       - 'stably-orca-git/**'
       - '.github/workflows/test-stably-orca-git.yml'
+      - '.github/scripts/sync-ci-issue.cjs'
+      - 'tests/check-built-version.sh'
 
 permissions:
   contents: read
@@ -65,41 +69,37 @@ jobs:
               chown -R builder:builder /work
               sudo -u builder bash -euxc "
                 cd /work/'"${PKG_DIR}"'
+                # Compare before makepkg updates pkgver and resets pkgrel.
+                # This checks every committed field without false drift warnings.
+                makepkg --printsrcinfo > /tmp/srcinfo.gen
+                diff -u .SRCINFO /tmp/srcinfo.gen
                 makepkg -s --noconfirm
-                # pkgver() resolves against upstream HEAD, so the generated
-                # pkgver never matches the committed placeholder. Ignore that
-                # one field, otherwise the warning fires on every run and real
-                # drift (a stale depends entry) hides in the noise.
-                makepkg --printsrcinfo | grep -v pkgver > /tmp/srcinfo.gen
-                grep -v pkgver .SRCINFO > /tmp/srcinfo.cur
-                if ! diff -u /tmp/srcinfo.cur /tmp/srcinfo.gen; then
-                  echo \"::warning::.SRCINFO drift detected (pkgver ignored). Regenerate locally.\"
-                fi
+                bash /work/tests/check-built-version.sh
               "
             '
           rc=$?
           echo "rc=${rc}" >> "${GITHUB_OUTPUT}"
           exit 0
 
-      - name: Open issue on scheduled build failure
-        if: steps.build.outputs.rc != '0' && github.event_name == 'schedule'
+      - name: Reconcile scheduled build reports
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/github-script@v9
+        env:
+          BUILD_RC: ${{ steps.build.outputs.rc }}
         with:
           script: |
-            const title = `stably-orca-git: scheduled build failed`;
-            const body = [
-              `Weekly build of \`stably-orca-git\` against upstream HEAD failed.`,
-              ``,
-              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              ``,
-              `Likely an upstream build change. Review and update the PKGBUILD.`,
-            ].join('\n');
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title,
-              body,
-              labels: ['ci-failure', 'stably-orca-git'],
+            const failed = process.env.BUILD_RC !== '0';
+            // Only scheduled failures open reports; a successful main build
+            // can resolve the incident regardless of what triggered it.
+            if (failed && context.eventName !== 'schedule') return;
+            const syncIssue = require('./.github/scripts/sync-ci-issue.cjs');
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await syncIssue({
+              github, context,
+              title: 'stably-orca-git: scheduled build failed',
+              labels: ['ci-failure', 'stably-orca-git'], failed,
+              body: `The weekly build against upstream HEAD failed. Review the build log and update the PKGBUILD if needed.\n\nRun: ${runUrl}`,
+              recovery: `The package now builds successfully against upstream HEAD. Verified by ${runUrl}`,
             });
 
       - name: Fail job if build failed

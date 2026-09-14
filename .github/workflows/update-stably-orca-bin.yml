@@ -123,6 +123,34 @@ jobs:
           echo "latest=${latest}" >> "${GITHUB_OUTPUT}"
           echo "Upstream latest: ${latest}"
 
+      # Also run when versions match: upstream can withdraw an already shipped asset.
+      - name: Check upstream download
+        id: download
+        continue-on-error: true
+        env:
+          DOWNLOAD_URL: https://github.com/stablyai/orca/releases/download/v${{ steps.upstream.outputs.latest }}/orca-linux.AppImage
+        run: |
+          curl --fail --head --location --silent --show-error \
+            --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 60 \
+            "${DOWNLOAD_URL}" > /dev/null
+
+      - name: Report unavailable download
+        if: steps.download.outcome == 'failure'
+        uses: actions/github-script@v9
+        env:
+          NEW_VER: ${{ steps.upstream.outputs.latest }}
+        with:
+          script: |
+            const syncIssue = require('./.github/scripts/sync-ci-issue.cjs');
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await syncIssue({
+              github, context,
+              title: 'stably-orca-bin: upstream download unavailable',
+              labels: ['ci-failure', 'stably-orca-bin'], failed: true,
+              body: `The AppImage for v${process.env.NEW_VER} is unavailable. Upstream may have withdrawn the release or asset.\n\nRun: ${runUrl}`,
+            });
+            core.setFailed('Upstream AppImage unavailable; refusing to publish.');
+
       - name: Compare versions
         id: diff
         env:
@@ -339,3 +367,17 @@ jobs:
               });
             }
             core.setFailed('AUR publish failed — the AUR is out of sync with this repo. The next scheduled run retries automatically.');
+
+      - name: Close recovered download reports
+        if: success() && (steps.aur_publish.outcome == 'success' || steps.diff.outputs.changed == 'false')
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const syncIssue = require('./.github/scripts/sync-ci-issue.cjs');
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await syncIssue({
+              github, context,
+              title: 'stably-orca-bin: upstream download unavailable',
+              labels: ['ci-failure', 'stably-orca-bin'], failed: false,
+              recovery: `The download is available and the package is in sync with AUR. Verified by ${runUrl}`,
+            });

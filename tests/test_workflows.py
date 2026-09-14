@@ -42,6 +42,30 @@ class WorkflowTests(unittest.TestCase):
                 result = subprocess.run(['bash', '-e', '-c', step['run']], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode == 0, success, result.stderr)
 
+    def test_built_version_check_reads_complete_metadata_stream(self):
+        # makepkg writes metadata incrementally. Exiting awk at pkgver can
+        # SIGPIPE the producer and fail the pipeline despite a valid version.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            metadata = (ROOT / 'stably-orca-git/.SRCINFO').read_text().replace(
+                '1.1.30.r0.g0000000', '1.4.163.r10916.g539d4d1f32')
+            (directory / 'metadata').write_text(metadata)
+            makepkg = directory / 'makepkg'
+            makepkg.write_text('#!/usr/bin/env python3\nimport os, time\n'
+                               'from pathlib import Path\n'
+                               'for line in Path(os.environ["METADATA"]).read_text().splitlines():\n'
+                               '    print(line, flush=True)\n    time.sleep(0.005)\n')
+            makepkg.chmod(0o755)
+            vercmp = directory / 'vercmp'
+            vercmp.write_text('#!/bin/sh\necho 1\n')
+            vercmp.chmod(0o755)
+            env = dict(os.environ, PATH=f'{directory}:{os.environ["PATH"]}',
+                       METADATA=str(directory / 'metadata'))
+            result = subprocess.run(['bash', str(ROOT / 'tests/check-built-version.sh')],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('1.4.163.r10916.g539d4d1f32', result.stdout)
+
     def test_withdrawn_release_can_roll_back(self):
         with tempfile.NamedTemporaryFile() as output:
             env = dict(os.environ, CUR='1.4.202', CUR_FULL='1.4.202-1', NEW='1.4.201',

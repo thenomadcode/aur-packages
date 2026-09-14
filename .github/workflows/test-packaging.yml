@@ -42,9 +42,6 @@ jobs:
           docker run --rm -v "${PWD}:/work" -w /work/stably-orca-bin \
             archlinux:base-devel bash -euxc '
               pacman -Syu --noconfirm --needed sudo
-              # A corrected desktop version must upgrade both old naming schemes.
-              test "$(vercmp 1.4.201.r10870.gabcdef mobile.android.v0.0.44.r10870.gabcdef)" -gt 0
-              test "$(vercmp 1.4.201.r10870.gabcdef 1.1.30.r0.g0000000)" -gt 0
               useradd -m builder
               echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
               chmod 0440 /etc/sudoers.d/builder

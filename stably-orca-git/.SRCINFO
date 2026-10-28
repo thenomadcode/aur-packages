@@ -10,6 +10,7 @@ pkgbase = stably-orca-git
 	makedepends = pnpm
 	makedepends = python
 	makedepends = unzip
+	makedepends = wayland
 	depends = zlib
 	depends = hicolor-icon-theme
 	depends = gtk3

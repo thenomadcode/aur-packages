@@ -3,7 +3,7 @@
 pkgname=stably-orca-git
 _gitname=orca
 pkgver=1.1.30.r0.g0000000
-pkgrel=3
+pkgrel=4
 pkgdesc="Stably AI Orca - Electron-based agentic coding IDE (built from main)"
 arch=('x86_64')
 url="https://github.com/stablyai/orca"
@@ -94,6 +94,10 @@ build() {
   cd "${srcdir}/${_gitname}"
   # Electron + node-pty need a working C toolchain and Python, covered by base-devel + makedepends.
   pnpm install --frozen-lockfile
+  # build:desktop:assets ends with build:mobile-web, which bundles mobile/
+  # (React Native/Expo) into out/mobile-web. mobile/ is its own pnpm project,
+  # excluded from the root workspace, so it needs a separate install.
+  pnpm --dir mobile install --frozen-lockfile
   # Reproduce upstream's build:linux but restrict electron-builder to the
   # AppImage target. Upstream's script also builds a .deb via bundled fpm,
   # whose ruby wants libcrypt.so.1 (not shipped on Arch). We only consume

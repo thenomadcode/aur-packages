@@ -104,6 +104,18 @@ EOF
     return 1
   fi
   sed -i "s/${floor}/glibcFloor: false/" "${config}"
+
+  # Likewise the beforePack provider exec helper: desktop Linux targets pick the
+  # Docker toolchain. Force the host compiler, which upstream already supports
+  # for dev builds (same -Werror and hardening flags).
+  local pexec='config/scripts/native-build/posix/build-provider-exec.mjs'
+  local pick="return slotLibc || hostCompiler ? 'host' : 'docker'"
+  if [[ ! -f "${pexec}" ]] || ! grep -qF "${pick}" "${pexec}"; then
+    echo "ERROR: provider exec toolchain selection not found in ${pexec}."
+    echo "Re-check the beforePack hook and update this PKGBUILD."
+    return 1
+  fi
+  sed -i "s/${pick}/return 'host'/" "${pexec}"
 }
 
 # Upstream's build:native compiles native/wayland-clipboard inside an Ubuntu

@@ -1,6 +1,7 @@
 """Exercise workflow shell steps against local HTTP and version fixtures."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -47,8 +48,8 @@ class WorkflowTests(unittest.TestCase):
         # SIGPIPE the producer and fail the pipeline despite a valid version.
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
-            metadata = (ROOT / 'stably-orca-git/.SRCINFO').read_text().replace(
-                '1.1.30.r0.g0000000', '1.4.163.r10916.g539d4d1f32')
+            metadata = re.sub(r'(?m)^(\tpkgver = ).*$', r'\g<1>1.4.163.r10916.g539d4d1f32',
+                              (ROOT / 'stably-orca-git/.SRCINFO').read_text())
             (directory / 'metadata').write_text(metadata)
             makepkg = directory / 'makepkg'
             makepkg.write_text('#!/usr/bin/env python3\nimport os, time\n'

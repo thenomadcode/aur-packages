@@ -50,5 +50,42 @@ jobs:
                 makepkg --printsrcinfo > /tmp/srcinfo.gen
                 diff -u .SRCINFO /tmp/srcinfo.gen
                 makepkg -s --noconfirm
+                # This runner cannot run the arm64 AppImage, so for aarch64 only
+                # download source_aarch64 and check it against sha256sums_aarch64.
+                # makepkg.conf pins CARCH, so override it there, not in the env.
+                sed \"s/^CARCH=.*/CARCH=aarch64/\" /etc/makepkg.conf > /tmp/makepkg-aarch64.conf
+                grep -qx CARCH=aarch64 /tmp/makepkg-aarch64.conf
+                makepkg --config /tmp/makepkg-aarch64.conf --verifysource 2>&1 | tee /tmp/verify.log
+                grep -q \"aarch64.AppImage ... Passed\" /tmp/verify.log
               "
             '
+
+  # Native arm64 runner: run the PKGBUILD's own prepare() and package() on the
+  # arm64 AppImage. There is no official Arch Linux ARM container, so this
+  # sources the PKGBUILD in plain bash instead of running makepkg.
+  binary-aarch64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run prepare() and package() for aarch64
+        working-directory: stably-orca-bin
+        run: |
+          set -euo pipefail
+          export CARCH=aarch64 srcdir="${RUNNER_TEMP}/src" pkgdir="${RUNNER_TEMP}/pkg"
+          mkdir -p "${srcdir}" "${pkgdir}"
+          source ./PKGBUILD
+          (( ${#source_aarch64[@]} == 1 && ${#sha256sums_aarch64[@]} == 1 ))
+          name="${source_aarch64[0]%%::*}"
+          curl -fsSL --retry 3 -o "${srcdir}/${name}" "${source_aarch64[0]#*::}"
+          echo "${sha256sums_aarch64[0]}  ${srcdir}/${name}" | sha256sum -c -
+          cp "${source[@]}" "${srcdir}/"
+          prepare
+          package
+          # Top-level executables (Electron binary, chrome-sandbox, ...) must be
+          # arm64. Deeper trees also ship x64 payloads for remote hosts by design.
+          elves="$(find "${pkgdir}/opt/stably-orca" -maxdepth 1 -type f -exec file {} + | grep ELF)"
+          echo "${elves}"
+          [[ -n "${elves}" ]] && ! grep -v 'ARM aarch64' <<<"${elves}"
+          test -x "${pkgdir}/opt/stably-orca/AppRun"
+          test -x "${pkgdir}/usr/bin/stably-orca"
+          ls "${pkgdir}"/usr/share/icons/hicolor/*/apps/stably-orca.png

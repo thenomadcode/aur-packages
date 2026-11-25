@@ -8,7 +8,7 @@ Each subdirectory is the canonical source for an AUR package; a GitHub Actions w
 
 | AUR | Source in this repo | Purpose |
 | --- | --- | --- |
-| [`stably-orca-bin`](https://aur.archlinux.org/packages/stably-orca-bin) | [`stably-orca-bin/`](stably-orca-bin/) | Installs the prebuilt `orca-linux.AppImage` from each upstream release. Fast, stable. |
+| [`stably-orca-bin`](https://aur.archlinux.org/packages/stably-orca-bin) | [`stably-orca-bin/`](stably-orca-bin/) | Installs the prebuilt AppImage from each upstream release: `orca-linux.AppImage` on `x86_64`, `orca-linux-arm64.AppImage` on `aarch64`. Fast, stable. |
 | [`stably-orca-git`](https://aur.archlinux.org/packages/stably-orca-git) | [`stably-orca-git/`](stably-orca-git/) | Builds Stably Orca from `main`. For testing upstream HEAD. Slow (full Electron build), may break without notice. |
 
 Both packages install to `/opt/stably-orca/` with a wrapper at `/usr/bin/stably-orca` and a desktop entry at `/usr/share/applications/stably-orca.desktop`. They conflict with each other — install only one.
@@ -35,14 +35,14 @@ Any AUR helper works — `paru`, `yay`, plain `makepkg -si`. No AUR helper is re
 
 1. A GitHub Actions job runs hourly. When nothing changed, it stops after the version and download checks.
 2. [`nvchecker`](https://github.com/lilydjwg/nvchecker) reads the latest `v*` tag from `stablyai/orca` releases.
-3. The selected AppImage URL is checked on every run, even if the version is unchanged. A missing download opens one failure issue and blocks publication. If the upstream version differs from the committed `pkgver`, the workflow bumps `pkgver`/`pkgrel`, regenerates `sha256sums` with `updpkgsums`, and **test-builds the package in an `archlinux:base-devel` container**. If the build fails, a GitHub issue is opened and nothing is pushed to AUR.
+3. Both AppImage URLs (`x86_64` and `aarch64`) are checked on every run, even if the version is unchanged. If either is missing, one failure issue is opened and publication is blocked. If the upstream version differs from the committed `pkgver`, the workflow bumps `pkgver`/`pkgrel`, regenerates `sha256sums`, `sha256sums_x86_64` and `sha256sums_aarch64` with `updpkgsums` (which downloads both AppImages), and **test-builds the `x86_64` package in an `archlinux:base-devel` container**. Both per-arch checksums must then match the digests GitHub publishes for the release assets. If the build or that check fails, a GitHub issue is opened and nothing is pushed to AUR.
 4. On a clean build, `.SRCINFO` is regenerated, committed to `main`, and the `stably-orca-bin/` subtree is pushed to the AUR git repo over SSH using [`KSXGitHub/github-actions-deploy-aur`](https://github.com/KSXGitHub/github-actions-deploy-aur).
 
 If upstream withdraws a release, the updater can return to the latest remaining stable release. It test-builds before publishing that rollback. Existing installations on the withdrawn, higher version need an explicit downgrade; fresh installs use the restored package normally. Download reports close after availability and AUR synchronization recover.
 
 `stably-orca-git` has its own weekly workflow that re-runs the build against upstream HEAD. Repeated failures share one issue; a successful main-branch build closes the automated reports. Package versions use only stable desktop `vX.Y.Z` tags, excluding mobile and prerelease tags. Committed `.SRCINFO` is checked before the build changes `pkgver` and resets `pkgrel`. Scheduled builds do not publish — `-git` packages fetch HEAD at install time. Validated recipe changes pushed to `main` publish to AUR.
 
-Pull requests run packaging regression tests and an Arch build of the committed binary recipe; changes to the source recipe also run its full Arch build. Locally, run `python3 -m unittest discover -s tests -p 'test_*.py'` (requires PyYAML) and `node --test tests/*.test.cjs`.
+Pull requests run packaging regression tests and an Arch build of the committed binary recipe. The `x86_64` runner cannot run the arm64 AppImage, so it only downloads the `aarch64` source and verifies its checksum (`makepkg --verifysource` with `CARCH=aarch64`); a separate job on an arm64 runner sources the PKGBUILD and runs its `prepare()` and `package()` on the arm64 AppImage. Changes to the source recipe also run its full Arch build. Locally, run `python3 -m unittest discover -s tests -p 'test_*.py'` (requires PyYAML) and `node --test tests/*.test.cjs`.
 
 ### Required repo configuration
 

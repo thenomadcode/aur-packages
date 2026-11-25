@@ -124,30 +124,45 @@ jobs:
           echo "Upstream latest: ${latest}"
 
       # Also run when versions match: upstream can withdraw an already shipped asset.
+      # Every architecture in the PKGBUILD needs its AppImage; one missing asset
+      # fails the step even if the others are present.
       - name: Check upstream download
         id: download
         continue-on-error: true
         env:
-          DOWNLOAD_URL: https://github.com/stablyai/orca/releases/download/v${{ steps.upstream.outputs.latest }}/orca-linux.AppImage
+          DOWNLOAD_URL_X86_64: https://github.com/stablyai/orca/releases/download/v${{ steps.upstream.outputs.latest }}/orca-linux.AppImage
+          DOWNLOAD_URL_AARCH64: https://github.com/stablyai/orca/releases/download/v${{ steps.upstream.outputs.latest }}/orca-linux-arm64.AppImage
         run: |
-          curl --fail --head --location --silent --show-error \
-            --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 60 \
-            "${DOWNLOAD_URL}" > /dev/null
+          missing=''
+          for pair in "x86_64 ${DOWNLOAD_URL_X86_64}" "aarch64 ${DOWNLOAD_URL_AARCH64}"; do
+            arch="${pair%% *}"
+            url="${pair#* }"
+            if ! curl --fail --head --location --silent --show-error \
+                --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 60 \
+                "${url}" > /dev/null; then
+              echo "::error::${arch} AppImage unavailable: ${url}"
+              missing="${missing:+${missing} }${arch}"
+            fi
+          done
+          echo "missing=${missing}" >> "${GITHUB_OUTPUT}"
+          [[ -z "${missing}" ]]
 
       - name: Report unavailable download
         if: steps.download.outcome == 'failure'
         uses: actions/github-script@v9
         env:
           NEW_VER: ${{ steps.upstream.outputs.latest }}
+          MISSING: ${{ steps.download.outputs.missing }}
         with:
           script: |
             const syncIssue = require('./.github/scripts/sync-ci-issue.cjs');
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const missing = process.env.MISSING || 'one or more architectures';
             await syncIssue({
               github, context,
               title: 'stably-orca-bin: upstream download unavailable',
               labels: ['ci-failure', 'stably-orca-bin'], failed: true,
-              body: `The AppImage for v${process.env.NEW_VER} is unavailable. Upstream may have withdrawn the release or asset.\n\nRun: ${runUrl}`,
+              body: `The AppImage for v${process.env.NEW_VER} is unavailable (${missing}). Upstream may have withdrawn the release or asset.\n\nRun: ${runUrl}`,
             });
             core.setFailed('Upstream AppImage unavailable; refusing to publish.');
 
@@ -215,6 +230,8 @@ jobs:
               chown -R builder:builder /work
               sudo -u builder bash -euxc "
                 cd /work/'"${PKG_DIR}"'
+                # updpkgsums downloads every arch-specific source, so this also
+                # refreshes sha256sums_aarch64. Only x86_64 can be built here.
                 updpkgsums
                 makepkg -s --noconfirm
                 makepkg --printsrcinfo > .SRCINFO
@@ -227,8 +244,23 @@ jobs:
           fi
           exit 0
 
+      # Fail the build (and open the issue below) unless both arch checksums
+      # are real hashes that match the digests GitHub reports for the assets.
+      - name: Verify per-arch checksums
+        if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc == '0'
+        id: sums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_VER: ${{ steps.upstream.outputs.latest }}
+        run: |
+          set -uo pipefail
+          rc=0
+          bash .github/scripts/check-arch-sums.sh "${PKG_DIR}/.SRCINFO" "v${NEW_VER}" || rc=$?
+          echo "rc=${rc}" >> "${GITHUB_OUTPUT}"
+          exit 0
+
       - name: Open issue on build failure
-        if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc != '0'
+        if: steps.diff.outputs.changed == 'true' && (steps.build.outputs.rc != '0' || steps.sums.outputs.rc != '0')
         uses: actions/github-script@v9
         env:
           NEW_VER: ${{ steps.upstream.outputs.latest }}
@@ -270,7 +302,7 @@ jobs:
             core.setFailed('Build failed — issue opened, not pushing.');
 
       - name: Commit bump to main
-        if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc == '0'
+        if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc == '0' && steps.sums.outputs.rc == '0'
         env:
           NEW_VER: ${{ steps.upstream.outputs.latest }}
         run: |
@@ -286,7 +318,7 @@ jobs:
           fi
 
       - name: Check AUR secret configured
-        if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc == '0'
+        if: steps.diff.outputs.changed == 'true' && steps.build.outputs.rc == '0' && steps.sums.outputs.rc == '0'
         id: aur_check
         env:
           KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
